@@ -14,7 +14,6 @@
 #include <vector>
 #include <string>
 
-// 一个简单的 Shader 封装
 struct Shader
 {
     GLuint id;
@@ -56,22 +55,33 @@ struct Shader
     void use() const { glUseProgram(id); }
 };
 
-// 存放一个 Mesh 的 VBO/VAO
 struct Mesh
 {
-    GLuint VAO, VBO;
-    size_t vertexCount;
-    Mesh(const std::vector<float> &data)
+    GLuint VAO, VBO, EBO;
+    GLsizei indexCount;
+
+    Mesh(const std::vector<float> &vertexData,
+         const std::vector<unsigned int> &indices)
     {
-        vertexCount = data.size() / 6; // 每顶点 6 float (pos+normal)
+        indexCount = (GLsizei)indices.size();
+
         glGenVertexArrays(1, &VAO);
         glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
 
         glBindVertexArray(VAO);
+
+        // 顶点数据
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER,
-                     data.size() * sizeof(float),
-                     data.data(), GL_STATIC_DRAW);
+                     vertexData.size() * sizeof(float),
+                     vertexData.data(), GL_STATIC_DRAW);
+
+        // 索引数据
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     indices.size() * sizeof(unsigned int),
+                     indices.data(), GL_STATIC_DRAW);
 
         // aPos
         glEnableVertexAttribArray(0);
@@ -80,13 +90,16 @@ struct Mesh
         // aNormal
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                              6 * sizeof(float), (void *)(3 * sizeof(float)));
+                              6 * sizeof(float),
+                              (void *)(3 * sizeof(float)));
+
         glBindVertexArray(0);
     }
+
     void draw() const
     {
         glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
     }
 };
 
@@ -107,20 +120,31 @@ std::vector<Mesh> loadModel(const std::string &path)
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
     {
         aiMesh *m = scene->mMeshes[i];
-        std::vector<float> data;
-        data.reserve(m->mNumVertices * 6);
+        std::vector<float> vertexData;
+        std::vector<unsigned int> indices;
+        vertexData.reserve(m->mNumVertices * 6);
+        indices.reserve(m->mNumFaces * 3);
+
+        // 顶点和法线
         for (unsigned v = 0; v < m->mNumVertices; ++v)
         {
-            // 位置
-            data.push_back(m->mVertices[v].x);
-            data.push_back(m->mVertices[v].y);
-            data.push_back(m->mVertices[v].z);
-            // 法线
-            data.push_back(m->mNormals[v].x);
-            data.push_back(m->mNormals[v].y);
-            data.push_back(m->mNormals[v].z);
+            vertexData.push_back(m->mVertices[v].x);
+            vertexData.push_back(m->mVertices[v].y);
+            vertexData.push_back(m->mVertices[v].z);
+            vertexData.push_back(m->mNormals[v].x);
+            vertexData.push_back(m->mNormals[v].y);
+            vertexData.push_back(m->mNormals[v].z);
         }
-        meshes.emplace_back(data);
+        // 索引
+        for (unsigned f = 0; f < m->mNumFaces; ++f)
+        {
+            const aiFace &face = m->mFaces[f];
+            // Assimp 已经确保每个 face 是三角形（因为用了 aiProcess_Triangulate）
+            indices.push_back(face.mIndices[0]);
+            indices.push_back(face.mIndices[1]);
+            indices.push_back(face.mIndices[2]);
+        }
+        meshes.emplace_back(vertexData, indices);
     }
     return meshes;
 }
