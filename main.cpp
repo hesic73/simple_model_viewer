@@ -71,13 +71,13 @@ struct Mesh
 
         glBindVertexArray(VAO);
 
-        // 顶点数据
+        // vertex data
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER,
                      vertexData.size() * sizeof(float),
                      vertexData.data(), GL_STATIC_DRAW);
 
-        // 索引数据
+        // index data
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                      indices.size() * sizeof(unsigned int),
@@ -103,7 +103,6 @@ struct Mesh
     }
 };
 
-// 加载 Assimp 场景，提取所有 mesh
 std::vector<Mesh> loadModel(const std::string &path)
 {
     Assimp::Importer importer;
@@ -149,6 +148,83 @@ std::vector<Mesh> loadModel(const std::string &path)
     return meshes;
 }
 
+struct CameraController
+{
+    // 参数
+    float radius = 1.0f;
+    float yaw = -90.0f;
+    float pitch = 0.0f;
+    glm::vec3 target = glm::vec3(0.0f);
+
+    // 敏感度常量
+    static constexpr float kZoomSpeed = 0.25f; // 每个滚轮刻度缩放量
+    static constexpr float kPanSpeed = 0.02f;  // 平移步长单位（乘以 radius）
+    static constexpr float min_radius = 0.05f; // 最小半径
+    static constexpr float max_radius = 20.0f; // 最大半径
+
+    // 构造时直接绑定回调
+    CameraController(GLFWwindow *window)
+    {
+        glfwSetWindowUserPointer(window, this);
+        glfwSetScrollCallback(window, ScrollCallback);
+        glfwSetKeyCallback(window, KeyCallback);
+    }
+
+    // 计算 view 矩阵
+    glm::mat4 getViewMatrix(glm::vec3 &outCamPos) const
+    {
+        outCamPos.x = target.x + radius * cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+        outCamPos.y = target.y + radius * sin(glm::radians(pitch));
+        outCamPos.z = target.z + radius * sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+        return glm::lookAt(outCamPos, target, glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+
+private:
+    // 滚轮缩放
+    static void ScrollCallback(GLFWwindow *w, double /*xoff*/, double yoff)
+    {
+        auto *cam = static_cast<CameraController *>(glfwGetWindowUserPointer(w));
+        if (!cam)
+            return;
+        cam->radius -= static_cast<float>(yoff) * kZoomSpeed;
+        cam->radius = glm::clamp(cam->radius, CameraController::min_radius, CameraController::max_radius);
+    }
+
+    // WASD/QE 平移
+    static void KeyCallback(GLFWwindow *w, int key, int /*sc*/, int action, int /*mods*/)
+    {
+        auto *cam = static_cast<CameraController *>(glfwGetWindowUserPointer(w));
+        if (!cam || (action != GLFW_PRESS && action != GLFW_REPEAT))
+            return;
+
+        // 计算前/右/上 向量
+        glm::vec3 front;
+        front.x = cos(glm::radians(cam->yaw)) * cos(glm::radians(cam->pitch));
+        front.y = sin(glm::radians(cam->pitch));
+        front.z = sin(glm::radians(cam->yaw)) * cos(glm::radians(cam->pitch));
+        front = glm::normalize(front);
+
+        glm::vec3 right = glm::normalize(glm::cross(front, glm::vec3(0, 1, 0)));
+        glm::vec3 up = glm::normalize(glm::cross(right, front));
+        float step = kPanSpeed * cam->radius;
+
+        if (key == GLFW_KEY_W)
+            cam->target += front * step;
+        if (key == GLFW_KEY_S)
+            cam->target -= front * step;
+        if (key == GLFW_KEY_A)
+            cam->target -= right * step;
+        if (key == GLFW_KEY_D)
+            cam->target += right * step;
+        if (key == GLFW_KEY_Q)
+            cam->target += up * step;
+        if (key == GLFW_KEY_E)
+            cam->target -= up * step;
+        if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+            glfwSetWindowShouldClose(w, GLFW_TRUE);
+    }
+};
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -167,18 +243,13 @@ int main(int argc, char **argv)
     gladLoadGL();
     glfwSwapInterval(1);
 
-    // — 加载模型 & GPU 上传 —
     auto meshes = loadModel(argv[1]);
     if (meshes.empty())
         return -1;
 
-    // — 编译 shader —
     Shader shader("shaders/vs.glsl", "shaders/fs.glsl");
 
-    // — 摄像机/投影 & 基本状态 —
-    glm::vec3 cameraPos(0.f, 0.f, 1.f);
-    glm::mat4 proj = glm::perspective(
-        glm::radians(45.f), 800.f / 600.f, 0.1f, 100.f);
+    CameraController camera(window);
     glEnable(GL_DEPTH_TEST);
 
     // — 渲染循环 —
@@ -195,10 +266,9 @@ int main(int argc, char **argv)
             glm::mat4(1.f), (float)glfwGetTime(),
             glm::vec3(0.f, 1.f, 0.f));
         // 视图矩阵
-        glm::mat4 view = glm::lookAt(
-            cameraPos,
-            glm::vec3(0.f),
-            glm::vec3(0.f, 1.f, 0.f));
+        glm::vec3 camPos;
+        glm::mat4 view = camera.getViewMatrix(camPos);
+        glm::mat4 proj = glm::perspective(glm::radians(45.f), w / (float)h, 0.1f, 100.f);
 
         shader.use();
         glUniformMatrix4fv(
@@ -208,7 +278,7 @@ int main(int argc, char **argv)
         glUniformMatrix4fv(
             glGetUniformLocation(shader.id, "uProj"), 1, GL_FALSE, glm::value_ptr(proj));
         glUniform3fv(
-            glGetUniformLocation(shader.id, "uViewPos"), 1, glm::value_ptr(cameraPos));
+            glGetUniformLocation(shader.id, "uViewPos"), 1, glm::value_ptr(camPos));
 
         for (auto &mesh : meshes)
             mesh.draw();
