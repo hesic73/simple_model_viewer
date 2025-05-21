@@ -14,7 +14,6 @@
 
 #include "spdlog/spdlog.h"
 
-#include <iostream> // Included as per your original code, though direct cout/cerr are replaced
 #include <fstream>
 #include <vector>
 #include <string>
@@ -294,7 +293,6 @@ struct CameraController
     {
         glfwSetWindowUserPointer(window, this);
         glfwSetScrollCallback(window, ScrollCallback);
-        glfwSetKeyCallback(window, KeyCallback);
         glfwSetMouseButtonCallback(window, MouseButtonCallback);
         glfwSetCursorPosCallback(window, CursorPosCallback);
     }
@@ -343,19 +341,6 @@ private:
         if (!cam)
             return;
         cam->radius = glm::clamp(cam->radius - static_cast<float>(yoffset) * kZoomSpeed, minRadius, maxRadius);
-    }
-
-    // Keyboard controls (fixed behavior, e.g., reset)
-    static void KeyCallback(GLFWwindow *w, int key, int /*scancode*/, int action, int /*mods*/)
-    {
-        auto *cam = static_cast<CameraController *>(glfwGetWindowUserPointer(w));
-        if (!cam || (action != GLFW_PRESS && action != GLFW_REPEAT))
-            return;
-
-        if (key == GLFW_KEY_R)
-        {
-            cam->reset();
-        }
     }
 
     // Mouse button handling: Left-drag rotates, Middle-drag pans
@@ -426,6 +411,9 @@ std::vector<TextureInfo> g_loadedTexturesCache;
 // Global variables for file drop
 std::string g_droppedModelPath;
 bool g_newModelPathAvailable = false;
+
+// Global flag to control model auto-rotation
+static bool g_autoRotateModel = true;
 
 // File drop callback function
 void drop_callback(GLFWwindow *window, int count, const char **paths)
@@ -738,11 +726,40 @@ std::vector<Mesh> loadModel(const std::string &path, const std::string &director
     return meshes_vec;
 }
 
+// Global key callback function
+void GlobalKeyCallback(GLFWwindow *window, int key, int scancode, int action, int mods)
+{
+    if (action == GLFW_PRESS || action == GLFW_REPEAT)
+    {
+        // ESC to close window
+        if (key == GLFW_KEY_ESCAPE)
+        {
+            spdlog::info("ESC key pressed. Closing window.");
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+
+        // Space to toggle model rotation (only on initial press)
+        if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
+        {
+            g_autoRotateModel = !g_autoRotateModel;
+            spdlog::info("Space key pressed. Model auto-rotation toggled to: {}", g_autoRotateModel ? "ON" : "OFF");
+        }
+
+        // 'R' to reset camera
+        if (key == GLFW_KEY_R)
+        {
+            auto *cam = static_cast<CameraController *>(glfwGetWindowUserPointer(window));
+            if (cam)
+            {
+                spdlog::info("'R' key pressed. Resetting camera.");
+                cam->reset();
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    // Optional: Set spdlog's global level (e.g., to show debug messages)
-    // spdlog::set_level(spdlog::level::debug);
-    // spdlog::set_pattern("[%H:%M:%S %z] [%^%L%$] %v"); // Optional log format
 
     // --- GLFW & GLAD Initialization ---
     glfwInit();
@@ -813,8 +830,16 @@ int main(int argc, char **argv)
     pointLight.shininess = 64.0f;                      // More focused specular highlight
 
     CameraController camera(window);
+    glfwSetKeyCallback(window, GlobalKeyCallback);
+
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.2f, 0.25f, 0.3f, 1.0f); // Set background color
+
+    float totalRotationAngle = 0.0f; // Accumulates the rotation angle
+    float lastFrameTime = 0.0f;      // Time of the last frame
+    constexpr float ROTATION_SPEED = 0.5f;
+
+    lastFrameTime = (float)glfwGetTime(); // Initialize lastFrameTime before the loop starts
 
     // --- Render Loop ---
     while (!glfwWindowShouldClose(window))
@@ -860,19 +885,34 @@ int main(int argc, char **argv)
         }
         else
         {
-            // If model is loaded, display model name or generic title
+            std::string titleBase = "Model Viewer";
             if (!statusMessage.empty() && statusMessage.rfind("Loaded: ", 0) == 0)
             {
-                // statusMessage is "Loaded: filename.ext", substr(8) gets "filename.ext"
-                glfwSetWindowTitle(window, ("Model Viewer - " + statusMessage.substr(8)).c_str());
-            }
-            else
-            { // Other cases (e.g., if statusMessage isn't "Loaded: ...")
-                glfwSetWindowTitle(window, "Model Viewer");
+                titleBase += " - " + statusMessage.substr(8);
             }
 
-            // Simple model rotation for demonstration
-            glm::mat4 model_matrix = glm::rotate(glm::mat4(1.f), (float)glfwGetTime() * 0.5f, glm::vec3(0.f, 1.f, 0.f));
+            // Append rotation status to title
+            if (g_autoRotateModel)
+            {
+                // titleBase += " (Rotating)";
+            }
+            else
+            {
+                titleBase += " (Paused)";
+            }
+
+            glfwSetWindowTitle(window, titleBase.c_str());
+
+            float currentFrameTime = (float)glfwGetTime();
+            float deltaTime = currentFrameTime - lastFrameTime;
+            lastFrameTime = currentFrameTime;
+
+            if (g_autoRotateModel)
+            {
+                totalRotationAngle += ROTATION_SPEED * deltaTime;
+            }
+
+            glm::mat4 model_matrix = glm::rotate(glm::mat4(1.f), totalRotationAngle, glm::vec3(0.f, 1.f, 0.f));
 
             glm::vec3 camPos;
             glm::mat4 view = camera.getViewMatrix(camPos);

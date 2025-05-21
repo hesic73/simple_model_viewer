@@ -40,6 +40,7 @@ You can start the application with or without a command-line argument:
 
 - **Keyboard**:
   - Press `R` to reset to the default camera pose.
+  - Press `Space` to toggle model rotation.
 - **Mouse**:
   - Hold the left mouse button to change the camera orientation.
   - Hold the middle mouse button to pan the view.
