@@ -2,6 +2,10 @@
 
 A very simple 3D model viewer built with OpenGL and Assimp.
 
+
+https://github.com/user-attachments/assets/5628eb14-c14b-4e53-a5de-a42f8407c7f3
+
+
 ## Dependencies
 
 This project depends on the following libraries:
