@@ -112,6 +112,15 @@ struct Mesh
     }
 };
 
+struct LightConfig
+{
+    glm::vec3 position;     // 光源位置
+    glm::vec3 color;        // 光源颜色 (会影响环境光、漫反射光和镜面光)
+    float ambientStrength;  // 环境光强度
+    float specularStrength; // 镜面光强度
+    float shininess;        // 高光指数 (影响高光锐利程度)
+};
+
 std::vector<Mesh> loadModel(const std::string &path, const glm::vec3 &defaultColor = glm::vec3(0.8f, 0.8f, 0.8f))
 {
     Assimp::Importer importer;
@@ -361,6 +370,14 @@ int main(int argc, char **argv)
 
     Shader shader("shaders/vs.glsl", "shaders/fs.glsl");
 
+    // --- 初始化光照配置 ---
+    LightConfig pointLight;
+    pointLight.position = glm::vec3(3.0f, 3.0f, 3.0f); // 调整光源位置
+    pointLight.color = glm::vec3(1.0f, 1.0f, 1.0f);    // 白色光源
+    pointLight.ambientStrength = 0.15f;                // 环境光稍弱一些
+    pointLight.specularStrength = 0.6f;                // 镜面反射强度
+    pointLight.shininess = 64.0f;                      // 更集中的高光
+
     CameraController camera(window);
     glEnable(GL_DEPTH_TEST);
 
@@ -391,6 +408,13 @@ int main(int argc, char **argv)
             glGetUniformLocation(shader.id, "uProj"), 1, GL_FALSE, glm::value_ptr(proj));
         glUniform3fv(
             glGetUniformLocation(shader.id, "uViewPos"), 1, glm::value_ptr(camPos));
+
+        // --- 设置光照 Uniforms ---
+        glUniform3fv(glGetUniformLocation(shader.id, "uLightPos"), 1, glm::value_ptr(pointLight.position));
+        glUniform3fv(glGetUniformLocation(shader.id, "uLightColor"), 1, glm::value_ptr(pointLight.color));
+        glUniform1f(glGetUniformLocation(shader.id, "uAmbientStrength"), pointLight.ambientStrength);
+        glUniform1f(glGetUniformLocation(shader.id, "uSpecularStrength"), pointLight.specularStrength);
+        glUniform1f(glGetUniformLocation(shader.id, "uShininess"), pointLight.shininess);
 
         for (auto &mesh : meshes)
             mesh.draw();
