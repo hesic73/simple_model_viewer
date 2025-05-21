@@ -1,44 +1,53 @@
 #version 330 core
-in vec3 FragPos;
-in vec3 Normal;
-in vec3 VertexColor;
-in vec2 vTexCoords; // 新增：从顶点着色器接收的纹理坐标
+in vec3 FragPos;      // Fragment position in world space (from vertex shader)
+in vec3 Normal;       // Normal in world space (from vertex shader)
+in vec3 VertexColor;  // Vertex color (from vertex shader)
+in vec2 vTexCoords;   // Texture coordinates (from vertex shader)
 
-out vec4 FragColor;
+out vec4 FragColor; // Output fragment color
 
-// 光照参数
-uniform vec3 uLightPos;
-uniform vec3 uLightColor;
-uniform float uAmbientStrength;
-uniform float uSpecularStrength;
-uniform float uShininess;
-uniform vec3 uViewPos;
+// --- Lighting parameters (set from C++) ---
+uniform vec3 uLightPos;         // Light position in world space
+uniform vec3 uLightColor;       // Light color
+uniform float uAmbientStrength;   // Ambient light intensity
+uniform float uSpecularStrength;  // Specular light intensity
+uniform float uShininess;         // Shininess factor for specular highlights
 
-// 纹理采样器
-uniform sampler2D uDiffuseSampler;    // 漫反射纹理采样器
-uniform bool uHasDiffuseTexture; // 是否有漫反射纹理
+// --- Other Uniforms ---
+uniform vec3 uViewPos;          // Observer/camera position in world space
+
+// --- Texture samplers ---
+uniform sampler2D uDiffuseSampler;    // Diffuse texture sampler
+uniform bool uHasDiffuseTexture;   // Flag indicating if a diffuse texture is present
 
 void main()
 {
     vec3 materialBaseColor;
     if (uHasDiffuseTexture) {
         materialBaseColor = texture(uDiffuseSampler, vTexCoords).rgb;
-        // 可选：与顶点颜色混合，例如 materialBaseColor *= VertexColor;
+        // Optional: Modulate with vertex color, e.g., materialBaseColor *= VertexColor;
     } else {
-        materialBaseColor = VertexColor; // 没有纹理则使用顶点颜色
+        materialBaseColor = VertexColor; // Use vertex color if no texture is present
     }
 
-    // 光照计算 (与之前相同)
+    // --- Lighting Calculation ---
+    // 1. Ambient light
     vec3 ambient = uAmbientStrength * uLightColor;
-    vec3 norm = normalize(Normal);
-    vec3 lightDir = normalize(uLightPos - FragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
-    vec3 diffuse = diff * uLightColor;
-    vec3 viewDir = normalize(uViewPos - FragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), uShininess);
-    vec3 specular = uSpecularStrength * spec * uLightColor;
 
+    // 2. Diffuse light
+    vec3 norm = normalize(Normal); // Normalize the normal vector
+    vec3 lightDir = normalize(uLightPos - FragPos); // Direction from fragment to light source
+    float diff = max(dot(norm, lightDir), 0.0);     // Diffuse intensity (dot product, clamped to >= 0)
+    vec3 diffuse = diff * uLightColor;              // Diffuse light color
+
+    // 3. Specular light
+    vec3 viewDir = normalize(uViewPos - FragPos);    // Direction from fragment to viewer
+    vec3 reflectDir = reflect(-lightDir, norm);      // Reflected light direction
+                                                     // (-lightDir because reflect expects vector from light to surface)
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), uShininess); // Specular highlight intensity
+    vec3 specular = uSpecularStrength * spec * uLightColor;          // Specular light color
+
+    // Final color = (sum of light components) * material's base color
     vec3 result = (ambient + diffuse + specular) * materialBaseColor;
     FragColor = vec4(result, 1.0);
 }
