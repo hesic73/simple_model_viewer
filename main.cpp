@@ -83,15 +83,24 @@ struct Mesh
                      indices.size() * sizeof(unsigned int),
                      indices.data(), GL_STATIC_DRAW);
 
-        // aPos
+        // 顶点属性的总步长 (位置3 + 法线3 + 颜色3 = 9 floats)
+        GLsizei stride = 9 * sizeof(float);
+
+        // aPos (location = 0)
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                              6 * sizeof(float), (void *)0);
-        // aNormal
+                              stride, (void *)0);
+        // aNormal (location = 1)
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                              6 * sizeof(float),
-                              (void *)(3 * sizeof(float)));
+                              stride,
+                              (void *)(3 * sizeof(float))); // 偏移3个float
+
+        // aColor (location = 2)
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,
+                              stride,
+                              (void *)(6 * sizeof(float))); // 偏移6个float (3 for pos + 3 for normal)
 
         glBindVertexArray(0);
     }
@@ -103,14 +112,15 @@ struct Mesh
     }
 };
 
-std::vector<Mesh> loadModel(const std::string &path)
+std::vector<Mesh> loadModel(const std::string &path, const glm::vec3 &defaultColor = glm::vec3(0.8f, 0.8f, 0.8f))
 {
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(path,
                                              aiProcess_Triangulate |
                                                  aiProcess_GenSmoothNormals |
-                                                 aiProcess_JoinIdenticalVertices);
-    if (!scene)
+                                                 aiProcess_JoinIdenticalVertices |
+                                                 aiProcess_ValidateDataStructure);
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
     {
         std::cerr << "Failed to load model: " << importer.GetErrorString() << "\n";
         return {};
@@ -121,24 +131,51 @@ std::vector<Mesh> loadModel(const std::string &path)
         aiMesh *m = scene->mMeshes[i];
         std::vector<float> vertexData;
         std::vector<unsigned int> indices;
-        vertexData.reserve(m->mNumVertices * 6);
+        // 每个顶点现在包含：位置 (3) + 法线 (3) + 颜色 (3) = 9 floats
+        vertexData.reserve(m->mNumVertices * 9);
         indices.reserve(m->mNumFaces * 3);
 
-        // 顶点和法线
+        // 顶点、法线和颜色
         for (unsigned v = 0; v < m->mNumVertices; ++v)
         {
+            // 位置
             vertexData.push_back(m->mVertices[v].x);
             vertexData.push_back(m->mVertices[v].y);
             vertexData.push_back(m->mVertices[v].z);
-            vertexData.push_back(m->mNormals[v].x);
-            vertexData.push_back(m->mNormals[v].y);
-            vertexData.push_back(m->mNormals[v].z);
+
+            // 法线 (Assimp应该已经生成了)
+            if (m->HasNormals())
+            {
+                vertexData.push_back(m->mNormals[v].x);
+                vertexData.push_back(m->mNormals[v].y);
+                vertexData.push_back(m->mNormals[v].z);
+            }
+            else // Fallback, though aiProcess_GenSmoothNormals should prevent this
+            {
+                vertexData.push_back(0.0f);
+                vertexData.push_back(0.0f);
+                vertexData.push_back(0.0f);
+            }
+
+            // 颜色 (检查第一组顶点颜色 mColors[0])
+            if (m->HasVertexColors(0))
+            {
+                vertexData.push_back(m->mColors[0][v].r);
+                vertexData.push_back(m->mColors[0][v].g);
+                vertexData.push_back(m->mColors[0][v].b);
+            }
+            else
+            {
+                // 如果模型没有顶点颜色，使用传入的默认颜色
+                vertexData.push_back(defaultColor.r);
+                vertexData.push_back(defaultColor.g);
+                vertexData.push_back(defaultColor.b);
+            }
         }
         // 索引
         for (unsigned f = 0; f < m->mNumFaces; ++f)
         {
             const aiFace &face = m->mFaces[f];
-            // Assimp 已经确保每个 face 是三角形（因为用了 aiProcess_Triangulate）
             indices.push_back(face.mIndices[0]);
             indices.push_back(face.mIndices[1]);
             indices.push_back(face.mIndices[2]);
@@ -147,7 +184,6 @@ std::vector<Mesh> loadModel(const std::string &path)
     }
     return meshes;
 }
-
 struct CameraController
 {
 
