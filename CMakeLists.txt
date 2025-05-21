@@ -23,7 +23,8 @@ find_package(assimp REQUIRED)
 # --- GLAD ---
 add_subdirectory(glad)
 
-
+# --- spdlog ---
+find_package(spdlog REQUIRED)
 
 add_executable(model_viewer main.cpp)
 
@@ -35,6 +36,7 @@ target_link_libraries(model_viewer
         glm
         glad
         assimp::assimp
+        spdlog::spdlog
 )
 
 

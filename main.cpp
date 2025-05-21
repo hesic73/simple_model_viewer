@@ -12,6 +12,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include "spdlog/spdlog.h"
+
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -20,18 +22,26 @@
 
 struct Shader
 {
-    GLuint id;
+    GLuint id = 0; // Initialize to 0
     Shader(const char *vsPath, const char *fsPath)
     {
         auto load = [&](const char *path)
         {
             std::ifstream f(path);
+            if (!f.is_open())
+            {
+                spdlog::error("Failed to open shader file: {}", path);
+                return std::string();
+            }
             return std::string(
                 std::istreambuf_iterator<char>(f),
                 std::istreambuf_iterator<char>());
         };
-        auto compile = [&](const std::string &src, GLenum type)
+        auto compile = [&](const std::string &src, GLenum type, const char *shaderPath) // Added shaderPath for logging
         {
+            if (src.empty())
+                return (GLuint)0; // Don't try to compile empty source
+
             GLuint s = glCreateShader(type);
             const char *cstr = src.c_str();
             glShaderSource(s, 1, &cstr, nullptr);
@@ -42,21 +52,62 @@ struct Shader
             {
                 char buf[512];
                 glGetShaderInfoLog(s, 512, nullptr, buf);
-                std::cerr << "Shader compile error: " << buf << std::endl;
+                // OLD: std::cerr << "Shader compile error: " << buf << std::endl;
+                spdlog::error("Shader compile error in {} (from {}): {}",
+                              (type == GL_VERTEX_SHADER ? "Vertex Shader" : "Fragment Shader"),
+                              shaderPath, buf);
+                glDeleteShader(s); // Clean up failed shader
+                return (GLuint)0;
             }
             return s;
         };
-        std::string vs = load(vsPath), fs = load(fsPath);
-        GLuint vsID = compile(vs, GL_VERTEX_SHADER);
-        GLuint fsID = compile(fs, GL_FRAGMENT_SHADER);
+        std::string vs_src = load(vsPath);
+        std::string fs_src = load(fsPath);
+
+        if (vs_src.empty() || fs_src.empty())
+        {
+            spdlog::error("Failed to load one or more shader sources. VS: '{}', FS: '{}'", vsPath, fsPath);
+            id = 0; // Mark as invalid
+            return;
+        }
+
+        GLuint vsID = compile(vs_src, GL_VERTEX_SHADER, vsPath);
+        GLuint fsID = compile(fs_src, GL_FRAGMENT_SHADER, fsPath);
+
+        if (vsID == 0 || fsID == 0)
+        {
+            if (vsID != 0)
+                glDeleteShader(vsID); // Clean up if one succeeded but other failed
+            if (fsID != 0)
+                glDeleteShader(fsID);
+            id = 0; // Mark as invalid
+            return;
+        }
+
         id = glCreateProgram();
         glAttachShader(id, vsID);
         glAttachShader(id, fsID);
         glLinkProgram(id);
+
+        GLint link_ok;
+        glGetProgramiv(id, GL_LINK_STATUS, &link_ok);
+        if (!link_ok)
+        {
+            char buf[512];
+            glGetProgramInfoLog(id, 512, nullptr, buf);
+            spdlog::error("Shader program link error: {}", buf);
+            glDeleteProgram(id); // Clean up failed program
+            id = 0;              // Mark as invalid
+        }
+        // Shaders are linked, no longer needed
         glDeleteShader(vsID);
         glDeleteShader(fsID);
     }
-    void use() const { glUseProgram(id); }
+    void use() const
+    {
+        if (id != 0)
+            glUseProgram(id);
+    }
 };
 
 struct TextureInfo
@@ -361,26 +412,22 @@ std::vector<TextureInfo> g_loadedTexturesCache;
 
 std::string g_droppedModelPath;
 bool g_newModelPathAvailable = false;
-
-// --- 拖放回调函数 ---
 void drop_callback(GLFWwindow *window, int count, const char **paths)
 {
     if (count > 0)
     {
-        // 我们简单地处理第一个拖放的文件
         g_droppedModelPath = paths[0];
         g_newModelPathAvailable = true;
-        std::cout << "File dropped: " << paths[0] << std::endl;
+        // OLD: std::cout << "File dropped: " << paths[0] << std::endl;
+        spdlog::info("File dropped: {}", paths[0]);
     }
 }
 
-// 替换你现有的 LoadTexture 函数
 GLuint LoadTexture(
-    const char *texturePathCStr,       // Assimp提供的路径 (可能是文件名或 "*index")
-    const std::string &modelDirectory, // 模型文件所在的目录
-    const aiScene *scene,              // Assimp场景指针 (用于访问嵌入纹理)
-    const std::string &modelFilePath   // 完整模型文件路径 (用于为嵌入纹理生成唯一缓存键)
-)
+    const char *texturePathCStr,
+    const std::string &modelDirectory,
+    const aiScene *scene,
+    const std::string &modelFilePath)
 {
     std::string texturePathAssimp = std::string(texturePathCStr);
     std::string cacheKey;
@@ -412,15 +459,15 @@ GLuint LoadTexture(
 
     int width, height, nrComponents;
     unsigned char *data = nullptr;
-    const aiTexture *currentEmbeddedTexture = nullptr; // <--- 在这里声明并初始化
-    bool stbi_allocated_data = false;                  // <--- 用于跟踪内存是否由stb分配
+    const aiTexture *currentEmbeddedTexture = nullptr;
+    bool stbi_allocated_data = false;
 
     if (isEmbedded)
     {
         int textureIndex = std::stoi(texturePathAssimp.substr(1));
         if (scene && textureIndex >= 0 && static_cast<unsigned int>(textureIndex) < scene->mNumTextures)
         {
-            currentEmbeddedTexture = scene->mTextures[textureIndex]; // <--- 在这里赋值
+            currentEmbeddedTexture = scene->mTextures[textureIndex];
             if (currentEmbeddedTexture->mHeight == 0)
             {
                 data = stbi_load_from_memory(
@@ -428,7 +475,7 @@ GLuint LoadTexture(
                     currentEmbeddedTexture->mWidth,
                     &width, &height, &nrComponents, 0);
                 if (data)
-                    stbi_allocated_data = true; // 标记为stb分配
+                    stbi_allocated_data = true;
             }
             else
             {
@@ -436,26 +483,26 @@ GLuint LoadTexture(
                 height = currentEmbeddedTexture->mHeight;
                 nrComponents = 4;
                 data = reinterpret_cast<unsigned char *>(currentEmbeddedTexture->pcData);
-                stbi_allocated_data = false; // 数据直接来自Assimp，不由stb分配
+                stbi_allocated_data = false;
             }
             if (!data)
             {
-                std::cerr << "Failed to process embedded texture: " << texturePathAssimp << " from " << modelFilePath << std::endl;
+                spdlog::error("Failed to process embedded texture: {} from {}", texturePathAssimp, modelFilePath);
             }
         }
         else
         {
-            std::cerr << "Invalid embedded texture index or scene pointer for: " << texturePathAssimp << std::endl;
+            spdlog::error("Invalid embedded texture index or scene pointer for: {}", texturePathAssimp);
         }
     }
     else
     {
         data = stbi_load(cacheKey.c_str(), &width, &height, &nrComponents, 0);
         if (data)
-            stbi_allocated_data = true; // 标记为stb分配
+            stbi_allocated_data = true;
         else
         {
-            std::cerr << "Texture failed to load at path: " << cacheKey << " | Reason: " << stbi_failure_reason() << std::endl;
+            spdlog::error("Texture failed to load at path: {} | Reason: {}", cacheKey, stbi_failure_reason());
         }
     }
 
@@ -480,9 +527,10 @@ GLuint LoadTexture(
         }
         else
         {
-            std::cerr << "Texture " << cacheKey << " loaded with unsupported " << nrComponents << " components." << std::endl;
+            // OLD: std::cerr << "Texture " << cacheKey << " loaded with unsupported " << nrComponents << " components." << std::endl;
+            spdlog::error("Texture {} loaded with unsupported {} components.", cacheKey, nrComponents);
             if (stbi_allocated_data)
-                stbi_image_free(data); // 只释放stb分配的内存
+                stbi_image_free(data);
             glDeleteTextures(1, &textureID);
             return 0;
         }
@@ -490,14 +538,13 @@ GLuint LoadTexture(
         glBindTexture(GL_TEXTURE_2D, textureID);
         glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, dataFormat, GL_UNSIGNED_BYTE, data);
         glGenerateMipmap(GL_TEXTURE_2D);
-
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         if (stbi_allocated_data)
-        { // 只释放stb分配的内存
+        {
             stbi_image_free(data);
         }
 
@@ -505,27 +552,24 @@ GLuint LoadTexture(
         newTexCacheEntry.id = textureID;
         newTexCacheEntry.path = cacheKey;
         g_loadedTexturesCache.push_back(newTexCacheEntry);
-        std::cout << "Loaded texture: " << cacheKey << " (ID: " << textureID << ")" << std::endl;
+        // OLD: std::cout << "Loaded texture: " << cacheKey << " (ID: " << textureID << ")" << std::endl;
+        spdlog::info("Loaded texture: {} (ID: {})", cacheKey, textureID);
     }
     else
     {
-        glDeleteTextures(1, &textureID); // 如果data为null，意味着加载失败，删除已生成的纹理ID
+        glDeleteTextures(1, &textureID);
         return 0;
     }
     return textureID;
 }
 
-// 替换你现有的 loadMaterialTextures 函数
 std::vector<TextureInfo> loadMaterialTextures(
     aiMaterial *mat,
     const std::string &modelDirectory,
-    const aiScene *scene,            // 新增
-    const std::string &modelFilePath // 新增
-)
+    const aiScene *scene,
+    const std::string &modelFilePath)
 {
     std::vector<TextureInfo> textures;
-
-    // 优先尝试 PBR 基础颜色纹理 (glTF/GLB 常用)
     for (unsigned int i = 0; i < mat->GetTextureCount(aiTextureType_BASE_COLOR); i++)
     {
         aiString str;
@@ -535,8 +579,7 @@ std::vector<TextureInfo> loadMaterialTextures(
         {
             TextureInfo texture;
             texture.id = textureId;
-            texture.type = "texture_diffuse"; // 我们在着色器中统一按 "texture_diffuse" 处理
-            // 从缓存中获取规范化路径
+            texture.type = "texture_diffuse";
             for (const auto &cachedTex : g_loadedTexturesCache)
             {
                 if (cachedTex.id == textureId)
@@ -548,8 +591,6 @@ std::vector<TextureInfo> loadMaterialTextures(
             textures.push_back(texture);
         }
     }
-
-    // 如果没有找到 BASE_COLOR 纹理，再尝试传统的 DIFFUSE 纹理
     if (textures.empty())
     {
         for (unsigned int i = 0; i < mat->GetTextureCount(aiTextureType_DIFFUSE); i++)
@@ -577,11 +618,10 @@ std::vector<TextureInfo> loadMaterialTextures(
     return textures;
 }
 
-// 修改 loadModel 函数
 std::vector<Mesh> loadModel(const std::string &path, const std::string &directory, const glm::vec3 &defaultColor = glm::vec3(0.8f, 0.8f, 0.8f))
 {
     Assimp::Importer importer;
-    const aiScene *scene = importer.ReadFile(path, // path 是完整模型路径
+    const aiScene *scene = importer.ReadFile(path,
                                              aiProcess_Triangulate |
                                                  aiProcess_GenSmoothNormals |
                                                  aiProcess_FlipUVs |
@@ -589,30 +629,29 @@ std::vector<Mesh> loadModel(const std::string &path, const std::string &director
                                                  aiProcess_ValidateDataStructure);
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
     {
-        std::cerr << "Failed to load model: " << importer.GetErrorString() << "\n";
+        spdlog::error("Failed to load model '{}': {}", path, importer.GetErrorString());
         return {};
     }
 
-    std::vector<Mesh> meshes;
+    std::vector<Mesh> meshes_vec;
     for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
     {
-        aiMesh *mesh = scene->mMeshes[i];
-        std::vector<float> vertexData; /* ... (与之前相同，确保为11个float预留空间) ... */
-        vertexData.reserve(mesh->mNumVertices * 11);
-        std::vector<unsigned int> indices; /* ... (与之前相同) ... */
+        aiMesh *mesh_ptr = scene->mMeshes[i];
+        std::vector<float> vertexData;
+        vertexData.reserve(mesh_ptr->mNumVertices * 11);
+        std::vector<unsigned int> indices;
         std::vector<TextureInfo> meshTextures;
 
-        for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+        for (unsigned int v = 0; v < mesh_ptr->mNumVertices; ++v)
         {
-            // 位置, 法线, 颜色, 纹理坐标的填充逻辑与你之前代码相同
-            vertexData.push_back(mesh->mVertices[v].x); /* ... x,y,z ... */
-            vertexData.push_back(mesh->mVertices[v].y);
-            vertexData.push_back(mesh->mVertices[v].z);
-            if (mesh->HasNormals())
-            { /* ... normals ... */
-                vertexData.push_back(mesh->mNormals[v].x);
-                vertexData.push_back(mesh->mNormals[v].y);
-                vertexData.push_back(mesh->mNormals[v].z);
+            vertexData.push_back(mesh_ptr->mVertices[v].x);
+            vertexData.push_back(mesh_ptr->mVertices[v].y);
+            vertexData.push_back(mesh_ptr->mVertices[v].z);
+            if (mesh_ptr->HasNormals())
+            {
+                vertexData.push_back(mesh_ptr->mNormals[v].x);
+                vertexData.push_back(mesh_ptr->mNormals[v].y);
+                vertexData.push_back(mesh_ptr->mNormals[v].z);
             }
             else
             {
@@ -620,11 +659,11 @@ std::vector<Mesh> loadModel(const std::string &path, const std::string &director
                 vertexData.push_back(0.0f);
                 vertexData.push_back(0.0f);
             }
-            if (mesh->HasVertexColors(0))
-            { /* ... colors ... */
-                vertexData.push_back(mesh->mColors[0][v].r);
-                vertexData.push_back(mesh->mColors[0][v].g);
-                vertexData.push_back(mesh->mColors[0][v].b);
+            if (mesh_ptr->HasVertexColors(0))
+            {
+                vertexData.push_back(mesh_ptr->mColors[0][v].r);
+                vertexData.push_back(mesh_ptr->mColors[0][v].g);
+                vertexData.push_back(mesh_ptr->mColors[0][v].b);
             }
             else
             {
@@ -632,10 +671,10 @@ std::vector<Mesh> loadModel(const std::string &path, const std::string &director
                 vertexData.push_back(defaultColor.g);
                 vertexData.push_back(defaultColor.b);
             }
-            if (mesh->HasTextureCoords(0))
-            { /* ... tex coords ... */
-                vertexData.push_back(mesh->mTextureCoords[0][v].x);
-                vertexData.push_back(mesh->mTextureCoords[0][v].y);
+            if (mesh_ptr->HasTextureCoords(0))
+            {
+                vertexData.push_back(mesh_ptr->mTextureCoords[0][v].x);
+                vertexData.push_back(mesh_ptr->mTextureCoords[0][v].y);
             }
             else
             {
@@ -644,82 +683,96 @@ std::vector<Mesh> loadModel(const std::string &path, const std::string &director
             }
         }
 
-        for (unsigned int f = 0; f < mesh->mNumFaces; f++)
-        { /* ... (索引填充与之前相同) ... */
-            aiFace face = mesh->mFaces[f];
+        for (unsigned int f = 0; f < mesh_ptr->mNumFaces; f++)
+        {
+            aiFace face = mesh_ptr->mFaces[f];
             for (unsigned int j = 0; j < face.mNumIndices; j++)
                 indices.push_back(face.mIndices[j]);
         }
 
-        if (mesh->mMaterialIndex >= 0)
+        if (mesh_ptr->mMaterialIndex >= 0)
         {
-            aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
-            // 注意这里传递 scene 指针和原始模型路径 path
+            aiMaterial *material = scene->mMaterials[mesh_ptr->mMaterialIndex];
             meshTextures = loadMaterialTextures(material, directory, scene, path);
         }
 
-        meshes.emplace_back(vertexData, indices, meshTextures);
+        meshes_vec.emplace_back(vertexData, indices, meshTextures);
     }
-    return meshes;
+    return meshes_vec;
 }
 
 int main(int argc, char **argv)
 {
 
-    // — GLFW & GLAD 初始化 —
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     GLFWwindow *window = glfwCreateWindow(800, 600, "Model Viewer", nullptr, nullptr);
+    if (!window)
+    {
+        spdlog::critical("Failed to create GLFW window");
+        glfwTerminate();
+        return -1;
+    }
     glfwMakeContextCurrent(window);
-    gladLoadGL();
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        spdlog::critical("Failed to initialize GLAD");
+        glfwTerminate();
+        return -1;
+    }
     glfwSwapInterval(1);
     glfwSetDropCallback(window, drop_callback);
 
-    std::vector<Mesh> meshes;
-    std::string statusMessage; // 用于在窗口标题显示状态信息
+    std::vector<Mesh> meshes_main;
+    std::string statusMessage;
 
-    // --- 可选: 从命令行加载初始模型 ---
     if (argc > 1)
     {
         std::string fullPath = argv[1];
         std::string filename = std::filesystem::path(fullPath).filename().string();
-        std::string directory = std::filesystem::path(fullPath).parent_path().string(); // 获取模型目录
-        std::cout << "Attempting to load model from command line: " << fullPath << std::endl;
+        std::string directory = std::filesystem::path(fullPath).parent_path().string();
+        spdlog::info("Attempting to load model from command line: {}", fullPath);
 
-        meshes = loadModel(fullPath, directory); // 传递目录
-        if (meshes.empty())
-        { /* ... (statusMessage 设置) ... */
+        meshes_main = loadModel(fullPath, directory);
+        if (meshes_main.empty())
+        {
             statusMessage = "Error loading initial: " + filename + ". Drag & drop.";
-            std::cerr << statusMessage << std::endl;
+            spdlog::error("{}", statusMessage);
         }
         else
-        { /* ... (statusMessage 设置) ... */
+        {
             statusMessage = "Loaded: " + filename;
-            std::cout << "Successfully loaded initial model: " << fullPath << std::endl;
+            spdlog::info("Successfully loaded initial model: {}", fullPath);
         }
     }
     else
-    { /* ... (statusMessage 设置) ... */
+    {
         statusMessage = "Drag & drop a model file to load.";
-        std::cout << statusMessage << std::endl;
+        spdlog::info("{}", statusMessage);
     }
 
     Shader shader("shaders/vs.glsl", "shaders/fs.glsl");
+    if (shader.id == 0)
+    { // Check if shader compilation/linking failed
+        spdlog::critical("Failed to initialize shaders. Exiting.");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
-    // --- 初始化光照配置 ---
     LightConfig pointLight;
-    pointLight.position = glm::vec3(3.0f, 3.0f, 3.0f); // 调整光源位置
-    pointLight.color = glm::vec3(1.0f, 1.0f, 1.0f);    // 白色光源
-    pointLight.ambientStrength = 0.15f;                // 环境光稍弱一些
-    pointLight.specularStrength = 0.6f;                // 镜面反射强度
-    pointLight.shininess = 64.0f;                      // 更集中的高光
+    pointLight.position = glm::vec3(3.0f, 3.0f, 3.0f);
+    pointLight.color = glm::vec3(1.0f, 1.0f, 1.0f);
+    pointLight.ambientStrength = 0.15f;
+    pointLight.specularStrength = 0.6f;
+    pointLight.shininess = 64.0f;
 
     CameraController camera(window);
     glEnable(GL_DEPTH_TEST);
+    glClearColor(0.2f, 0.25f, 0.3f, 1.0f);
 
-    // — 渲染循环 —
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -733,19 +786,19 @@ int main(int argc, char **argv)
             g_droppedModelPath.clear();
             g_newModelPathAvailable = false;
 
-            std::cout << "Processing dropped file: " << currentDroppedFullPath << std::endl;
-            std::vector<Mesh> newMeshes = loadModel(currentDroppedFullPath, currentDroppedDirectory); // 传递目录
+            spdlog::info("Processing dropped file: {}", currentDroppedFullPath);
+            std::vector<Mesh> newMeshes = loadModel(currentDroppedFullPath, currentDroppedDirectory);
             if (!newMeshes.empty())
-            { /* ... (meshes 和 statusMessage 更新) ... */
-                meshes = std::move(newMeshes);
+            {
+                meshes_main = std::move(newMeshes);
                 statusMessage = "Loaded: " + currentDroppedFilename;
-                std::cout << "Successfully loaded model from: " << currentDroppedFullPath << std::endl;
+                spdlog::info("Successfully loaded model from: {}", currentDroppedFullPath);
             }
             else
-            { /* ... (meshes 和 statusMessage 更新) ... */
-                meshes.clear();
+            {
+                meshes_main.clear();
                 statusMessage = "Error loading: " + currentDroppedFilename + ". Drag & drop.";
-                std::cerr << "Failed to load model from dropped file: " << currentDroppedFullPath << std::endl;
+                spdlog::error("Failed to load model from dropped file: {}", currentDroppedFullPath);
             }
         }
 
@@ -754,13 +807,12 @@ int main(int argc, char **argv)
         glViewport(0, 0, w, h);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        if (meshes.empty())
-        { /* ... (窗口标题设置) ... */
+        if (meshes_main.empty())
+        {
             glfwSetWindowTitle(window, ("Model Viewer - " + statusMessage).c_str());
         }
         else
         {
-            /* ... (窗口标题设置) ... */
             if (!statusMessage.empty() && statusMessage.rfind("Loaded: ", 0) == 0)
             {
                 glfwSetWindowTitle(window, ("Model Viewer - " + statusMessage.substr(8)).c_str());
@@ -770,13 +822,12 @@ int main(int argc, char **argv)
                 glfwSetWindowTitle(window, "Model Viewer");
             }
 
-            glm::mat4 model_matrix = glm::rotate(/* ... */ glm::mat4(1.f), (float)glfwGetTime() * 0.5f, glm::vec3(0.f, 1.f, 0.f));
+            glm::mat4 model_matrix = glm::rotate(glm::mat4(1.f), (float)glfwGetTime() * 0.5f, glm::vec3(0.f, 1.f, 0.f));
             glm::vec3 camPos;
             glm::mat4 view = camera.getViewMatrix(camPos);
             glm::mat4 proj = glm::perspective(glm::radians(45.f), (h == 0 ? 1.0f : w / (float)h), 0.1f, 100.f);
 
             shader.use();
-            // 设置通用 uniforms
             glUniformMatrix4fv(glGetUniformLocation(shader.id, "uModel"), 1, GL_FALSE, glm::value_ptr(model_matrix));
             glUniformMatrix4fv(glGetUniformLocation(shader.id, "uView"), 1, GL_FALSE, glm::value_ptr(view));
             glUniformMatrix4fv(glGetUniformLocation(shader.id, "uProj"), 1, GL_FALSE, glm::value_ptr(proj));
@@ -786,22 +837,18 @@ int main(int argc, char **argv)
             glUniform1f(glGetUniformLocation(shader.id, "uAmbientStrength"), pointLight.ambientStrength);
             glUniform1f(glGetUniformLocation(shader.id, "uSpecularStrength"), pointLight.specularStrength);
             glUniform1f(glGetUniformLocation(shader.id, "uShininess"), pointLight.shininess);
-
-            // 设置漫反射纹理采样器 uniform (uDiffuseSampler) 到纹理单元 0 (只需要设置一次，因为它不会变)
             glUniform1i(glGetUniformLocation(shader.id, "uDiffuseSampler"), 0);
 
-            for (auto &mesh_obj : meshes)
+            for (auto &mesh_obj : meshes_main)
             {
-                mesh_obj.draw(shader); // 将 shader 传递给 draw 函数
+                mesh_obj.draw(shader);
             }
         }
-
         glfwSwapBuffers(window);
     }
 
-    meshes.clear(); // 清理 Mesh 对象的 GL 资源 (VAO/VBO/EBO)
+    meshes_main.clear();
 
-    // --- 清理加载的纹理 ---
     for (const auto &texInfo : g_loadedTexturesCache)
     {
         if (texInfo.id != 0)
